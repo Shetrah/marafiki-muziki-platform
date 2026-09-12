@@ -21,8 +21,18 @@ export default function PublicTicket() {
   if (loading) return <div className="center-screen">Opening your ticket…</div>;
   if (!event || !ticket) return <div className="center-screen">Ticket not found or no longer available.</div>;
 
+  const currentEvent = event;
+  const currentTicket = ticket;
   const ticketUrl = window.location.href;
-  async function download(){setDownloading(true);try{await downloadTicketPdf(event,ticket,'public-ticket-qr')}finally{setDownloading(false)}}
+
+  async function download() {
+    setDownloading(true);
+    try {
+      await downloadTicketPdf(currentEvent, currentTicket, 'public-ticket-qr');
+    } finally {
+      setDownloading(false);
+    }
+  }
 
   return <section className="public-ticket-page" style={{'--ticket-poster':`url(${event.posterUrl || '/poster.png'})`} as CSSProperties}>
     <div className="ticket-theme-backdrop"/>

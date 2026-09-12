@@ -1,9 +1,17 @@
-import { Link, NavLink, Outlet } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
 import { Music2, Ticket, Menu, X } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import PageTransition from './PageTransition';
 
 export default function PublicLayout() {
   const [open, setOpen] = useState(false);
+  const location = useLocation();
+
+  useEffect(() => {
+    setOpen(false);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [location.pathname]);
+
   return (
     <div className="site-shell">
       <header className="public-header">
@@ -11,7 +19,14 @@ export default function PublicLayout() {
           <img src="/logo.png" alt="Marafiki Muziki" />
           <div><strong>MARAFIKI MUZIKI</strong><span>A Band That Brings You Home</span></div>
         </Link>
-        <button className="menu-toggle" onClick={() => setOpen(!open)} aria-label="Toggle navigation">{open ? <X/> : <Menu/>}</button>
+        <button
+          className="menu-toggle"
+          onClick={() => setOpen(!open)}
+          aria-label="Toggle navigation"
+          aria-expanded={open}
+        >
+          {open ? <X/> : <Menu/>}
+        </button>
         <nav className={open ? 'public-nav open' : 'public-nav'}>
           <NavLink to="/" end onClick={() => setOpen(false)}>Home</NavLink>
           <NavLink to="/events" onClick={() => setOpen(false)}>Events</NavLink>
@@ -21,7 +36,13 @@ export default function PublicLayout() {
           <Link to="/events" className="nav-cta" onClick={() => setOpen(false)}><Ticket size={17}/> Book an Event</Link>
         </nav>
       </header>
-      <main><Outlet /></main>
+
+      <main>
+        <PageTransition>
+          <Outlet />
+        </PageTransition>
+      </main>
+
       <footer className="public-footer">
         <div className="footer-brand"><img src="/logo.png" alt="Marafiki Muziki"/><div><strong>MARAFIKI MUZIKI</strong><span>A Band That Brings You Home</span></div></div>
         <div className="footer-copy"><Music2 size={18}/><span>Live music • intimate experiences • memorable nights</span></div>

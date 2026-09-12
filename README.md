@@ -229,3 +229,29 @@ No extra PDF package is required. The project generates a one-page PDF directly 
 - booking status
 
 This avoids the missing `jspdf` / `html5-qrcode` import errors from the earlier version.
+
+## Vercel deployment
+
+This project includes `vercel.json` with an SPA rewrite to `index.html`. That means direct links and browser refreshes work correctly on routes such as:
+
+```text
+/events/{eventId}
+/ticket/{eventId}/{ticketId}
+/admin/dashboard
+/admin/events/{eventId}
+/admin/events/{eventId}/scanner
+```
+
+Before deploying, add the Firebase variables in:
+
+```text
+Vercel → Project → Settings → Environment Variables
+```
+
+Add every `VITE_FIREBASE_*` variable from `.env.example` for Production, Preview and Development as needed.
+
+After adding or changing environment variables, redeploy the project.
+
+## Page transitions
+
+Public and admin route changes use lightweight CSS transitions with no extra animation dependency. The effect automatically respects `prefers-reduced-motion` accessibility settings.

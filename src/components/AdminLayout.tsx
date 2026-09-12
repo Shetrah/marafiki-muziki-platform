@@ -1,14 +1,23 @@
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { CalendarDays, LayoutDashboard, LogOut, Music2 } from 'lucide-react';
 import { signOut } from 'firebase/auth';
+import { useEffect } from 'react';
 import { auth } from '../lib/firebase';
+import PageTransition from './PageTransition';
 
 export default function AdminLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
+
+  useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [location.pathname]);
+
   async function logout() {
     await signOut(auth);
     navigate('/admin');
   }
+
   return (
     <div className="admin-shell">
       <aside className="admin-sidebar">
@@ -20,7 +29,12 @@ export default function AdminLayout() {
         </nav>
         <button className="admin-logout" onClick={logout}><LogOut size={18}/> Sign Out</button>
       </aside>
-      <section className="admin-content"><Outlet/></section>
+
+      <section className="admin-content">
+        <PageTransition className="admin-page-transition">
+          <Outlet/>
+        </PageTransition>
+      </section>
     </div>
   );
 }
