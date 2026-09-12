@@ -1,0 +1,147 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAnonymous() {
+      return signedIn()
+        && request.auth.token.firebase.sign_in_provider == 'anonymous';
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && !isAnonymous()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function eventPath(eventId) {
+      return /databases/$(database)/documents/events/$(eventId);
+    }
+
+    function bookingPath(eventId) {
+      return /databases/$(database)/documents/events/$(eventId)/bookings/$(request.auth.uid);
+    }
+
+    function ticketPath(eventId) {
+      return /databases/$(database)/documents/events/$(eventId)/tickets/$(request.auth.uid);
+    }
+
+    function validGuestEventReservation(eventId) {
+      let bookingAfter = getAfter(bookingPath(eventId));
+      let ticketAfter = getAfter(ticketPath(eventId));
+      let added = request.resource.data.reserved - resource.data.reserved;
+
+      return isAnonymous()
+        && resource.data.status == 'published'
+        && resource.data.bookingOpen == true
+        && !exists(bookingPath(eventId))
+        && !exists(ticketPath(eventId))
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reserved', 'updatedAt'])
+        && resource.data.reserved is int
+        && resource.data.capacity is int
+        && resource.data.maxTicketsPerBooking is int
+        && request.resource.data.reserved is int
+        && added >= 1
+        && added <= resource.data.maxTicketsPerBooking
+        && request.resource.data.reserved <= resource.data.capacity
+        && bookingAfter.data.ownerUid == request.auth.uid
+        && bookingAfter.data.eventId == eventId
+        && bookingAfter.data.quantity == added
+        && bookingAfter.data.status == 'confirmed'
+        && bookingAfter.data.checkedIn == false
+        && ticketAfter.data.eventId == eventId
+        && ticketAfter.data.quantity == added
+        && ticketAfter.data.status == 'confirmed'
+        && ticketAfter.data.checkedIn == false
+        && ticketAfter.data.ticketCode == bookingAfter.data.bookingCode;
+    }
+
+    function validGuestBookingCreate(eventId, bookingId) {
+      let eventBefore = get(eventPath(eventId));
+      let eventAfter = getAfter(eventPath(eventId));
+      let ticketAfter = getAfter(ticketPath(eventId));
+
+      return isAnonymous()
+        && bookingId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'eventId', 'bookingCode', 'fullName', 'phone', 'email', 'quantity',
+          'status', 'checkedIn', 'checkedInAt', 'checkedInBy', 'ownerUid',
+          'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.eventId == eventId
+        && request.resource.data.bookingCode is string
+        && request.resource.data.fullName is string
+        && request.resource.data.fullName.size() >= 2
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() >= 7
+        && request.resource.data.email is string
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 1
+        && request.resource.data.quantity <= eventBefore.data.maxTicketsPerBooking
+        && request.resource.data.status == 'confirmed'
+        && request.resource.data.checkedIn == false
+        && request.resource.data.checkedInAt == null
+        && request.resource.data.checkedInBy == null
+        && eventBefore.data.status == 'published'
+        && eventBefore.data.bookingOpen == true
+        && eventAfter.data.reserved == eventBefore.data.reserved + request.resource.data.quantity
+        && eventAfter.data.reserved <= eventAfter.data.capacity
+        && ticketAfter.data.ticketCode == request.resource.data.bookingCode
+        && ticketAfter.data.quantity == request.resource.data.quantity
+        && ticketAfter.data.guestName == request.resource.data.fullName;
+    }
+
+    function validGuestTicketCreate(eventId, ticketId) {
+      let bookingAfter = getAfter(bookingPath(eventId));
+      return isAnonymous()
+        && ticketId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'eventId', 'ticketCode', 'guestName', 'quantity', 'status',
+          'checkedIn', 'checkedInAt', 'createdAt'
+        ])
+        && request.resource.data.eventId == eventId
+        && request.resource.data.ticketCode is string
+        && request.resource.data.guestName is string
+        && request.resource.data.quantity is int
+        && request.resource.data.quantity >= 1
+        && request.resource.data.status == 'confirmed'
+        && request.resource.data.checkedIn == false
+        && request.resource.data.checkedInAt == null
+        && bookingAfter.data.ownerUid == request.auth.uid
+        && bookingAfter.data.bookingCode == request.resource.data.ticketCode
+        && bookingAfter.data.quantity == request.resource.data.quantity
+        && bookingAfter.data.fullName == request.resource.data.guestName;
+    }
+
+    match /admins/{uid} {
+      allow get: if signedIn() && request.auth.uid == uid;
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+
+    match /events/{eventId} {
+      allow get: if isAdmin() || resource.data.status == 'published';
+      allow list: if isAdmin() || resource.data.status == 'published';
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || validGuestEventReservation(eventId);
+
+      match /bookings/{bookingId} {
+        allow create: if validGuestBookingCreate(eventId, bookingId);
+        allow read: if isAdmin() || (signedIn() && resource.data.ownerUid == request.auth.uid);
+        allow update, delete: if isAdmin();
+      }
+
+      match /tickets/{ticketId} {
+        // Public ticket pages can fetch one unguessable ticket ID from a QR URL.
+        // Listing all tickets remains admin-only.
+        allow get: if true;
+        allow list: if isAdmin();
+        allow create: if validGuestTicketCreate(eventId, ticketId);
+        allow update, delete: if isAdmin();
+      }
+    }
+  }
+}
