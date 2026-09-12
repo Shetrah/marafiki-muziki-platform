@@ -4,13 +4,13 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID,
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID,
+  apiKey: 'AIzaSyCYo9LBQzeokRYwdsFuAGhSrRC8Uz-QsNo',
+  authDomain: 'living-room-experience.firebaseapp.com',
+  projectId: 'living-room-experience',
+  storageBucket: 'living-room-experience.firebasestorage.app',
+  messagingSenderId: '547184049291',
+  appId: '1:547184049291:web:a80bf1279b6494ed07a88e',
+  measurementId: 'G-WVQ5WB3BWW',
 };
 
 export const app = initializeApp(firebaseConfig);
