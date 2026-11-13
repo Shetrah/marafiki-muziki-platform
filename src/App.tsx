@@ -11,6 +11,7 @@ import AdminDashboard from './pages/AdminDashboard';
 import AdminEvents from './pages/AdminEvents';
 import AdminEventEditor from './pages/AdminEventEditor';
 import AdminScanner from './pages/AdminScanner';
+import AdminArtwork from './pages/AdminArtwork';
 
 const router = createBrowserRouter([
   {
@@ -30,6 +31,7 @@ const router = createBrowserRouter([
         {path:'events/new', element:<AdminEventEditor/>},
         {path:'events/:eventId', element:<AdminEventEditor/>},
         {path:'events/:eventId/scanner', element:<AdminScanner/>},
+        {path:'ai-artwork', element:<AdminArtwork/>},
       ]}
     ]
   }

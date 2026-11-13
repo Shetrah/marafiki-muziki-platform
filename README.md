@@ -255,3 +255,22 @@ After adding or changing environment variables, redeploy the project.
 ## Page transitions
 
 Public and admin route changes use lightweight CSS transitions with no extra animation dependency. The effect automatically respects `prefers-reduced-motion` accessibility settings.
+
+## Gemini ticket artwork
+
+The `/admin/ai-artwork` page generates poster-inspired design variations for an event. It uses the event poster uploaded to this project's Firebase Storage bucket, programmatically adds event title/date/venue text, and saves PNG and PDF outputs privately in Storage. It is a design-artwork workflow; booking-specific tickets and QR codes continue to use the existing ticket flow.
+
+Both configured models support Gemini image generation: `gemini-3-pro-image` (premium) and `gemini-3.1-flash-image` (standard/fallback). The Gemini API key is only used by the Firebase Function. Before deployment, install/build the function dependencies and set the secret and parameters:
+
+```powershell
+npm --prefix functions install
+firebase functions:secrets:set GEMINI_API_KEY
+```
+
+Set `GEMINI_IMAGE_MODEL`, `GEMINI_FALLBACK_IMAGE_MODEL`, and `GEMINI_ADMIN_UIDS` as Firebase Functions parameters. `GEMINI_ADMIN_UIDS` is a comma-separated allowlist of administrator Firebase Auth UIDs. Then deploy:
+
+```powershell
+firebase deploy --only functions,firestore:rules,storage
+```
+
+Generation is disabled until an administrator enables it and configures monthly call and per-request variation limits in the artwork page. The backend reserves usage for possible fallback attempts, records generation status, retries premium failures once with the configured fallback, and returns short-lived signed links to the admin.

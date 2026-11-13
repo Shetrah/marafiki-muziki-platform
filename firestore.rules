@@ -122,6 +122,15 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    match /settings/{settingId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /ticketArtworkGenerations/{generationId} {
+      allow read: if isAdmin();
+      allow write: if false;
+    }
+
     match /events/{eventId} {
       allow get: if isAdmin() || resource.data.status == 'published';
       allow list: if isAdmin() || resource.data.status == 'published';

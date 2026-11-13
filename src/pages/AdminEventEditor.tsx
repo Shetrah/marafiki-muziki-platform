@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
   ArrowLeft,
   ExternalLink,
-  Image as ImageIcon,
   QrCode,
   Save,
   Users,
@@ -24,6 +23,8 @@ import type {
   EventStatus,
   EventWithId,
 } from '../lib/types';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
+import { storage } from '../lib/firebase';
 
 const initial = {
   title: '',
@@ -54,6 +55,15 @@ export default function AdminEventEditor() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [saving, setSaving] = useState(false);
+  const [posterFile, setPosterFile] = useState<File | null>(null);
+  const [posterFilePreview, setPosterFilePreview] = useState('');
+
+  useEffect(() => {
+    if (!posterFile) { setPosterFilePreview(''); return; }
+    const preview = URL.createObjectURL(posterFile);
+    setPosterFilePreview(preview);
+    return () => URL.revokeObjectURL(preview);
+  }, [posterFile]);
 
   useEffect(() => {
     if (isNew) return;
@@ -117,10 +127,24 @@ export default function AdminEventEditor() {
         throw new Error('Enter an event title or slug.');
       }
 
+      let posterUrl = form.posterUrl.trim();
+      if (posterFile) {
+        const extension = posterFile.type === 'image/jpeg' ? 'jpg' : posterFile.type === 'image/webp' ? 'webp' : 'png';
+        const posterRef = ref(storage, `events/${id}/poster.${extension}`);
+        await uploadBytes(posterRef, posterFile, { contentType: posterFile.type });
+        posterUrl = await getDownloadURL(posterRef);
+      }
+      if (posterUrl) {
+        const posterHost = new URL(posterUrl).hostname;
+        if (posterHost !== 'firebasestorage.googleapis.com' && posterHost !== 'storage.googleapis.com') {
+          throw new Error('Event posters must be uploaded to Firebase Storage. Choose a poster file to replace this image.');
+        }
+      }
+
       const payload = {
         ...form,
         slug: slugify(form.slug || form.title),
-        posterUrl: form.posterUrl.trim(),
+        posterUrl,
         capacity: Number(form.capacity),
         maxTicketsPerBooking: Number(form.maxTicketsPerBooking),
       };
@@ -491,51 +515,19 @@ export default function AdminEventEditor() {
             </label>
           </div>
 
-          {/* POSTER URL */}
+          {/* EVENT POSTER FILE */}
           <label>
-            Event poster image link
-
-            <div
-              style={{
-                position: 'relative',
-              }}
-            >
-              <ImageIcon
-                size={19}
-                style={{
-                  position: 'absolute',
-                  left: 14,
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  opacity: 0.65,
-                  pointerEvents: 'none',
-                }}
-              />
-
-              <input
-                type="url"
-                value={form.posterUrl}
-                onChange={(e) =>
-                  setForm({
-                    ...form,
-                    posterUrl: e.target.value,
-                  })
-                }
-                placeholder="https://example.com/event-poster.jpg"
-                style={{
-                  paddingLeft: 44,
-                }}
-              />
-            </div>
-
-            <small>
-              Paste a direct image URL from Cloudinary,
-              Firebase Storage, your website, or another
-              public image host.
-            </small>
+            Upload event poster (JPG, PNG, WEBP)
+            <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => {
+              const file = e.target.files?.[0] ?? null;
+              if (file && file.size > 10 * 1024 * 1024) { setError('Poster must be 10 MB or smaller.'); e.currentTarget.value = ''; return; }
+              if (file && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { setError('Choose a JPG, PNG, or WEBP poster.'); e.currentTarget.value = ''; return; }
+              setError(''); setPosterFile(file);
+            }} />
+            <small>The poster is uploaded to Firebase Storage when you save the event.</small>
           </label>
 
-          {form.posterUrl && (
+          {(posterFilePreview || form.posterUrl) && (
             <div>
               <p
                 style={{
@@ -549,7 +541,7 @@ export default function AdminEventEditor() {
 
               <img
                 className="poster-preview"
-                src={form.posterUrl}
+                src={posterFilePreview || form.posterUrl}
                 alt="Event poster preview"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
