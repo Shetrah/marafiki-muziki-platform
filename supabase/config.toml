@@ -1,0 +1,2 @@
+[functions.generate-ticket-artwork]
+verify_jwt = true

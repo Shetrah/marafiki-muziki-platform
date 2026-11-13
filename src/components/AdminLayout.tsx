@@ -1,8 +1,7 @@
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { CalendarDays, ImagePlus, LayoutDashboard, LogOut, Music2 } from 'lucide-react';
-import { signOut } from 'firebase/auth';
 import { useEffect } from 'react';
-import { auth } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import PageTransition from './PageTransition';
 
 export default function AdminLayout() {
@@ -14,7 +13,7 @@ export default function AdminLayout() {
   }, [location.pathname]);
 
   async function logout() {
-    await signOut(auth);
+    await supabase.auth.signOut();
     navigate('/admin');
   }
 

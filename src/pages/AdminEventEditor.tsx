@@ -23,8 +23,7 @@ import type {
   EventStatus,
   EventWithId,
 } from '../lib/types';
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { storage } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 
 const initial = {
   title: '',
@@ -120,7 +119,7 @@ export default function AdminEventEditor() {
 
     try {
       const id = isNew
-        ? slugify(form.slug || form.title)
+        ? crypto.randomUUID()
         : eventId!;
 
       if (!id) {
@@ -128,16 +127,18 @@ export default function AdminEventEditor() {
       }
 
       let posterUrl = form.posterUrl.trim();
+      let posterStoragePath: string | null = null;
       if (posterFile) {
         const extension = posterFile.type === 'image/jpeg' ? 'jpg' : posterFile.type === 'image/webp' ? 'webp' : 'png';
-        const posterRef = ref(storage, `events/${id}/poster.${extension}`);
-        await uploadBytes(posterRef, posterFile, { contentType: posterFile.type });
-        posterUrl = await getDownloadURL(posterRef);
+        posterStoragePath = `events/${id}/poster.${extension}`;
+        const { error: uploadError } = await supabase.storage.from('event-posters').upload(posterStoragePath, posterFile, { contentType: posterFile.type, upsert: true });
+        if (uploadError) throw uploadError;
+        posterUrl = supabase.storage.from('event-posters').getPublicUrl(posterStoragePath).data.publicUrl;
       }
       if (posterUrl) {
         const posterHost = new URL(posterUrl).hostname;
-        if (posterHost !== 'firebasestorage.googleapis.com' && posterHost !== 'storage.googleapis.com') {
-          throw new Error('Event posters must be uploaded to Firebase Storage. Choose a poster file to replace this image.');
+        if (posterHost !== new URL(import.meta.env.VITE_SUPABASE_URL).hostname) {
+          throw new Error('Event posters must be uploaded to Supabase Storage. Choose a poster file to replace this image.');
         }
       }
 
@@ -150,21 +151,23 @@ export default function AdminEventEditor() {
       };
 
       if (isNew) {
-        await createEvent(
+        const created = await createEvent(
           id,
           payload as Omit<
             EventDoc,
             'reserved' | 'checkedIn' | 'createdAt' | 'updatedAt'
           >
         );
+        if (posterFile && posterStoragePath) await recordPosterAsset(created.id, posterStoragePath, posterFile);
 
         setSuccess('Event created successfully.');
 
-        navigate(`/admin/events/${id}`, {
+        navigate(`/admin/events/${created.id}`, {
           replace: true,
         });
       } else {
         await updateEvent(id, payload);
+        if (posterFile && posterStoragePath) await recordPosterAsset(id, posterStoragePath, posterFile);
 
         setSuccess('Event updated successfully.');
 
@@ -176,6 +179,19 @@ export default function AdminEventEditor() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function recordPosterAsset(ownerEventId: string, path: string, file: File) {
+    const { data: authData } = await supabase.auth.getUser();
+    const { error: assetError } = await supabase.from('event_assets').upsert({
+      event_id: ownerEventId,
+      storage_path: path,
+      asset_type: 'poster',
+      content_type: file.type,
+      byte_size: file.size,
+      created_by: authData.user?.id ?? null,
+    }, { onConflict: 'storage_path' });
+    if (assetError) throw assetError;
   }
 
   return (
@@ -524,7 +540,7 @@ export default function AdminEventEditor() {
               if (file && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) { setError('Choose a JPG, PNG, or WEBP poster.'); e.currentTarget.value = ''; return; }
               setError(''); setPosterFile(file);
             }} />
-            <small>The poster is uploaded to Firebase Storage when you save the event.</small>
+            <small>The poster is uploaded to Supabase Storage when you save the event.</small>
           </label>
 
           {(posterFilePreview || form.posterUrl) && (

@@ -1,276 +1,88 @@
 # Marafiki Muziki Platform
 
-A full React + Vite + Firebase website for the Marafiki Muziki band, with reusable event publishing, ticket booking, QR verification, downloadable themed PDF tickets, and an admin attendance dashboard.
+React + Vite event publishing, booking, ticket verification, and admin attendance management backed by Supabase Auth, PostgreSQL, Realtime, and Storage.
 
-## Public website
+## Configure Supabase
 
-- lively Marafiki Muziki landing page
-- About / Our Sound / Contact sections
-- public Events page
-- individual themed event pages
-- slot availability and sold-out handling
-- free online reservations
-- private booking information
-- public themed ticket page reached by QR code
-- one-click PDF ticket download
-- Marafiki Muziki logo used as brand logo and favicon
+1. Create a Supabase project.
+2. Enable email/password and anonymous sign-in in **Authentication → Providers**. Configure the Auth site URL and allowed redirect URL to include `/admin` for password recovery.
+3. Apply the migrations:
 
-## Admin area
-
-The public navigation does **not** contain an Admin link.
-
-Open admin directly at:
-
-```text
-/admin
+```powershell
+npx supabase login
+npx supabase link --project-ref <project-ref>
+npx supabase db push
 ```
 
-Admin features:
+4. Copy `.env.example` to `.env` and set `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (or publishable key). These are the only Supabase credentials used by browser code.
+5. Invite the first administrator in Supabase Auth, then promote the matching profile using the SQL Editor:
 
-- dashboard with total capacity, bookings, check-ins and attendance rate
-- simple attendance bars for every event
-- create / edit / publish events
-- upload event posters to Firebase Storage
-- set total slots and max tickets per booking
-- open / close online booking
-- guest list per event
-- event-specific QR scanner under Admin only
-- manual ticket lookup fallback
-
-## Firestore structure
-
-```text
-admins
-  {adminUid}
-
-events
-  {eventId}
-    title
-    slug
-    description
-    organizer
-    eventDate
-    startTime
-    endTime
-    venue
-    venueNote
-    musicBy
-    posterUrl
-    capacity
-    reserved
-    checkedIn
-    maxTicketsPerBooking
-    bookingOpen
-    status
-    createdAt
-    updatedAt
-
-    bookings
-      {anonymousUserUid}
-        fullName
-        phone
-        email
-        quantity
-        bookingCode
-        checkedIn
-        ...
-
-    tickets
-      {anonymousUserUid}
-        guestName
-        quantity
-        ticketCode
-        checkedIn
-        ...
+```sql
+update public.profiles set role = 'admin' where email = 'admin@example.com';
 ```
 
-The `bookings` subcollection is private. The `tickets` subcollection contains only the limited information required for the public QR ticket page.
+6. Install and run the frontend:
 
-## 1. Environment variables
-
-Create `.env` in the project root:
-
-```env
-VITE_FIREBASE_API_KEY=AIzaSyCYo9LBQzeokRYwdsFuAGhSrRC8Uz-QsNo
-VITE_FIREBASE_AUTH_DOMAIN=living-room-experience.firebaseapp.com
-VITE_FIREBASE_PROJECT_ID=living-room-experience
-VITE_FIREBASE_STORAGE_BUCKET=living-room-experience.firebasestorage.app
-VITE_FIREBASE_MESSAGING_SENDER_ID=547184049291
-VITE_FIREBASE_APP_ID=1:547184049291:web:a80bf1279b6494ed07a88e
-VITE_FIREBASE_MEASUREMENT_ID=G-WVQ5WB3BWW
-```
-
-## 2. Firebase Authentication
-
-Firebase Console → Authentication → Sign-in method:
-
-Enable:
-
-- **Email/Password** — admin login
-- **Anonymous** — public ticket booking
-
-Create the admin user under Authentication → Users.
-
-## 3. Create the admin document
-
-Copy the UID of the Email/Password admin account.
-
-In Firestore create:
-
-```text
-admins/{ADMIN_UID}
-```
-
-Example fields:
-
-```text
-name: "Marafiki Muziki Admin"
-email: "admin@example.com"
-role: "admin"
-active: true
-```
-
-The document ID must exactly equal the Firebase Authentication UID.
-
-## 4. Publish Firestore rules
-
-Copy `firestore.rules` to:
-
-Firebase Console → Firestore Database → Rules → Publish
-
-Or use Firebase CLI:
-
-```bash
-firebase deploy --only firestore:rules
-```
-
-## 5. Publish Storage rules
-
-Copy `storage.rules` to Firebase Storage Rules and publish, or run:
-
-```bash
-firebase deploy --only storage
-```
-
-Firebase Storage must be enabled before event poster uploads can work.
-
-## 6. Install and run
-
-```bash
+```powershell
 npm install
 npm run dev
 ```
 
-Production validation:
+The schema, RLS policies, booking and check-in functions, Storage buckets, and artwork budget functions are in `supabase/migrations/`. Anonymous Auth must be enabled for public bookings. Booking inventory is allocated in one database transaction, so concurrent requests cannot oversell an event.
 
-```bash
-npm run build
-```
+## Migrate Firebase data
 
-## 7. Create the first event
+The Firebase source is read-only during migration. Keep the source project available until the generated report confirms the destination counts and links. Do not migrate while bookings are being written; pause booking writes, migrate, verify, then switch the deployed frontend environment to Supabase.
 
-Go directly to:
-
-```text
-/admin
-```
-
-Sign in, then:
-
-```text
-Events → Create Event
-```
-
-For The Living Room Vibe, use for example:
-
-```text
-Title: The Living Room Vibe
-Date: 2026-09-25
-Start: 18:00
-End: 20:00
-Venue: Oasis Apartment
-Venue Note: Near Kwa Ndege Level 4 Hospital
-Music By: randy_muziki
-Status: Published
-Booking Open: Yes
-```
-
-Upload the event poster and choose the capacity from the admin form.
-
-## QR behavior
-
-The QR contains the public ticket URL:
-
-```text
-/ticket/{eventId}/{ticketId}
-```
-
-Opening it shows a branded event-theme ticket page. The admin scanner, however, is only available under:
-
-```text
-/admin/events/{eventId}/scanner
-```
-
-The scanner checks the event, confirms the ticket and updates attendance in Firestore.
-
-Recent Chrome / Edge browsers can use the built-in QR `BarcodeDetector` API. If a browser does not support live QR detection, the scanner includes a manual ticket-ID lookup fallback.
-
-## PDF tickets
-
-No extra PDF package is required. The project generates a one-page PDF directly in the browser from a rendered ticket design containing:
-
-- event poster
-- Marafiki Muziki logo
-- guest name
-- ticket number
-- date / time / venue
-- admit quantity
-- QR code
-- booking status
-
-This avoids the missing `jspdf` / `html5-qrcode` import errors from the earlier version.
-
-## Vercel deployment
-
-This project includes `vercel.json` with an SPA rewrite to `index.html`. That means direct links and browser refreshes work correctly on routes such as:
-
-```text
-/events/{eventId}
-/ticket/{eventId}/{ticketId}
-/admin/dashboard
-/admin/events/{eventId}
-/admin/events/{eventId}/scanner
-```
-
-Before deploying, add the Firebase variables in:
-
-```text
-Vercel → Project → Settings → Environment Variables
-```
-
-Add every `VITE_FIREBASE_*` variable from `.env.example` for Production, Preview and Development as needed.
-
-After adding or changing environment variables, redeploy the project.
-
-## Page transitions
-
-Public and admin route changes use lightweight CSS transitions with no extra animation dependency. The effect automatically respects `prefers-reduced-motion` accessibility settings.
-
-## Gemini ticket artwork
-
-The `/admin/ai-artwork` page generates poster-inspired design variations for an event. It uses the event poster uploaded to this project's Firebase Storage bucket, programmatically adds event title/date/venue text, and saves PNG and PDF outputs privately in Storage. It is a design-artwork workflow; booking-specific tickets and QR codes continue to use the existing ticket flow.
-
-Both configured models support Gemini image generation: `gemini-3-pro-image` (premium) and `gemini-3.1-flash-image` (standard/fallback). The Gemini API key is only used by the Firebase Function. Before deployment, install/build the function dependencies and set the secret and parameters:
+Install the isolated migration tool:
 
 ```powershell
-npm --prefix functions install
-firebase functions:secrets:set GEMINI_API_KEY
+npm --prefix migration install
 ```
 
-Set `GEMINI_IMAGE_MODEL`, `GEMINI_FALLBACK_IMAGE_MODEL`, and `GEMINI_ADMIN_UIDS` as Firebase Functions parameters. `GEMINI_ADMIN_UIDS` is a comma-separated allowlist of administrator Firebase Auth UIDs. Then deploy:
+Set these environment values in the migration shell. Keep the service account JSON outside the repository and never put the Supabase service role key in a `VITE_` variable:
 
 ```powershell
-firebase deploy --only functions,firestore:rules,storage
+$env:FIREBASE_SERVICE_ACCOUNT_PATH = 'C:\secure\firebase-service-account.json'
+$env:FIREBASE_STORAGE_BUCKET = '<firebase-project>.firebasestorage.app'
+$env:SUPABASE_URL = 'https://<project-ref>.supabase.co'
+$env:SUPABASE_SERVICE_ROLE_KEY = '<server-side service role key>'
 ```
 
-Generation is disabled until an administrator enables it and configures monthly call and per-request variation limits in the artwork page. The backend reserves usage for possible fallback attempts, records generation status, retries premium failures once with the configured fallback, and returns short-lived signed links to the admin.
+First run a read-only inventory:
+
+```powershell
+node migration/migrate.mjs
+```
+
+Review source totals and warnings. To import, run:
+
+```powershell
+node migration/migrate.mjs --apply
+```
+
+The importer transfers Firebase Auth accounts with email, admin roles, event documents, nested bookings and tickets, and Firebase Storage objects. It preserves legacy IDs for ticket links and records Firebase-to-Supabase identity mappings. Existing email accounts receive random temporary passwords and must use **Forgot or migrated your password?** on `/admin`; password hashes are not copied by this importer. Anonymous Firebase identities cannot be recreated as Supabase Auth identities, so their bookings retain the legacy owner ID and their old ticket identifiers remain lookup compatible. External poster URLs are imported to Supabase Storage when they are reachable HTTPS image links; failures are listed in the report.
+
+The importer is idempotent by legacy IDs and defaults to dry run. It writes a mode-`600` `migration-report.json` after an apply run with source/destination row counts and verification flags. Investigate any mismatch before cutover. Firebase source data and files are never deleted by this script. Legacy Firebase rules are archived in `migration/legacy/` for reference only; the running application does not use them.
+
+## Gemini image generation
+
+Deploy the server-side Supabase Edge Function and set its secrets:
+
+```powershell
+npx supabase secrets set GEMINI_API_KEY=<server-only-key>
+npx supabase secrets set GEMINI_IMAGE_MODEL=gemini-3-pro-image GEMINI_FALLBACK_IMAGE_MODEL=gemini-3.1-flash-image
+npx supabase functions deploy generate-ticket-artwork
+```
+
+The `/admin/ai-artwork` page allows administrators to set monthly call and variation limits and choose premium or standard generation. The function checks the authenticated profile role, reserves usage transactionally, reads the event's uploaded poster from Supabase Storage, retries a failed primary generation with the configured fallback, and stores private PNG/PDF outputs with expiring signed links. Gemini credentials and the service role key remain server-side. Generation is disabled until an admin enables a budget.
+
+## Database and access model
+
+- `profiles`, `events`, `event_assets`, `bookings`, `tickets`, `payments`, `email_logs`, `artwork_budgets`, and `artwork_generations` are defined with UUID primary keys and relational constraints.
+- RLS isolates profiles and bookings, exposes published events and limited public ticket fields, and restricts management operations to `profiles.role = 'admin'`.
+- `create_booking` locks the event row, checks status/capacity, creates booking and ticket records, and updates reservations atomically.
+- `check_in_ticket` verifies ticket and event ownership, prevents duplicate check-in, then updates both ticket and attendance state atomically.
+- Event posters are public objects in `event-posters`; generated ticket files are private in `generated-tickets`; other imported assets are private in `event-assets`.
+
+The app's routes remain `/`, `/events`, `/events/:eventId`, `/ticket/:eventId/:ticketId`, `/admin`, `/admin/dashboard`, `/admin/events`, and `/admin/ai-artwork`.

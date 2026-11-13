@@ -3,3 +3,8 @@ dist
 .env
 .firebase
 .DS_Store
+/.env.*
+!/.env.example
+**/service-account*.json
+/migration-report.json
+supabase/.temp/

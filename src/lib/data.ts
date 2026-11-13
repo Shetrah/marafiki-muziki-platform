@@ -1,592 +1,254 @@
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  limit,
-  onSnapshot,
-  orderBy,
-  query,
-  runTransaction,
-  serverTimestamp,
-  setDoc,
-  updateDoc,
-  where,
-} from 'firebase/firestore';
+import { supabase } from './supabase';
+import type { BookingWithId, EventDoc, EventWithId, PublicTicketWithId } from './types';
 
-import { signInAnonymously } from 'firebase/auth';
+type EventRow = Record<string, any>;
 
-import { auth, db } from './firebase';
+function eventFromRow(row: EventRow): EventWithId {
+  const posterPath = row.poster_path as string | null;
+  const posterUrl = posterPath ? supabase.storage.from('event-posters').getPublicUrl(posterPath).data.publicUrl : '';
+  return {
+    id: row.id,
+    slug: row.slug,
+    title: row.title,
+    description: row.description ?? '',
+    organizer: row.organizer ?? 'Marafiki Muziki',
+    eventDate: row.event_date,
+    startTime: row.start_time,
+    endTime: row.end_time,
+    venue: row.venue,
+    venueNote: row.venue_note ?? '',
+    musicBy: row.music_by ?? '',
+    posterUrl,
+    capacity: row.capacity,
+    reserved: row.reserved,
+    checkedIn: row.checked_in,
+    maxTicketsPerBooking: row.max_tickets_per_booking,
+    bookingOpen: row.booking_open,
+    status: row.status,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
 
-import type {
-  BookingWithId,
-  EventDoc,
-  EventWithId,
-  PublicTicketWithId,
-} from './types';
+function storagePathFromPublicUrl(url: string, bucket: string) {
+  const marker = `/storage/v1/object/public/${bucket}/`;
+  const index = url.indexOf(marker);
+  if (index < 0) throw new Error('Poster must be uploaded to the configured Supabase Storage bucket.');
+  return decodeURIComponent(url.slice(index + marker.length).split('?')[0]);
+}
 
-/* ============================================================
-   GUEST AUTH
-============================================================ */
+function eventPayload(payload: Partial<EventDoc>) {
+  const { posterUrl, ...rest } = payload;
+  const values: Record<string, unknown> = {
+    title: rest.title,
+    slug: rest.slug,
+    description: rest.description ?? '',
+    organizer: rest.organizer ?? 'Marafiki Muziki',
+    event_date: rest.eventDate,
+    start_time: rest.startTime,
+    end_time: rest.endTime,
+    venue: rest.venue,
+    venue_note: rest.venueNote ?? '',
+    music_by: rest.musicBy ?? '',
+    ...(posterUrl !== undefined ? { poster_path: posterUrl ? storagePathFromPublicUrl(posterUrl, 'event-posters') : null } : {}),
+    capacity: rest.capacity,
+    max_tickets_per_booking: rest.maxTicketsPerBooking,
+    booking_open: rest.bookingOpen,
+    status: rest.status,
+  };
+  return Object.fromEntries(Object.entries(values).filter(([, value]) => value !== undefined));
+}
+
+function bookingFromRow(row: Record<string, any>): BookingWithId {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    bookingCode: row.booking_code,
+    fullName: row.full_name,
+    phone: row.phone,
+    email: row.email,
+    quantity: row.quantity,
+    status: row.status,
+    checkedIn: row.checked_in,
+    checkedInAt: row.checked_in_at,
+    checkedInBy: row.checked_in_by,
+    ownerUid: row.user_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function publicTicketFromRow(row: Record<string, any>): PublicTicketWithId {
+  return {
+    id: row.id,
+    eventId: row.event_id,
+    ticketCode: row.ticket_code,
+    guestName: row.guest_name,
+    quantity: row.quantity,
+    status: row.status,
+    checkedIn: row.checked_in,
+    checkedInAt: row.checked_in_at,
+    createdAt: row.created_at,
+  };
+}
+
+async function resolveEventId(value: string) {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  let query = supabase.from('events').select('id').limit(1);
+  query = uuid ? query.eq('id', value) : query.eq('slug', value);
+  let { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  if (!data && !uuid) {
+    const legacy = await supabase.from('events').select('id').eq('legacy_id', value).maybeSingle();
+    if (legacy.error) throw legacy.error;
+    data = legacy.data;
+  }
+  if (!data) throw new Error('Event not found.');
+  return data.id as string;
+}
+
+async function loadEvents(admin: boolean) {
+  let query = supabase.from('events').select('*').order('event_date', { ascending: admin ? false : true });
+  if (!admin) query = query.eq('status', 'published');
+  const { data, error } = await query;
+  if (error) throw error;
+  return (data ?? []).map(eventFromRow);
+}
 
 export async function ensureGuestAuth() {
-  if (auth.currentUser?.isAnonymous) {
-    return auth.currentUser;
+  const { data: current } = await supabase.auth.getUser();
+  if (current.user?.is_anonymous) return current.user;
+  if (current.user) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', current.user.id).maybeSingle();
+    if (profile?.role === 'admin') throw new Error('You are signed in as an administrator. Sign out before making a public booking.');
+    return current.user;
   }
-
-  if (auth.currentUser && !auth.currentUser.isAnonymous) {
-    throw new Error(
-      'You are signed in as an administrator. Sign out before making a public booking.'
-    );
-  }
-
-  try {
-    const result = await signInAnonymously(auth);
-    return result.user;
-  } catch (error: any) {
-    if (
-      error?.code === 'auth/operation-not-allowed' ||
-      error?.code === 'auth/admin-restricted-operation'
-    ) {
-      throw new Error(
-        'Anonymous booking is not enabled. Enable Anonymous sign-in in Firebase Authentication.'
-      );
-    }
-
+  const { data, error } = await supabase.auth.signInAnonymously();
+  if (error) {
+    if (/anonymous/i.test(error.message) || error.status === 422) throw new Error('Anonymous sign-in is not enabled in Supabase Authentication settings.');
     throw error;
   }
+  return data.user;
 }
 
-/* ============================================================
-   EVENTS
-============================================================ */
-
-export function subscribePublishedEvents(
-  callback: (events: EventWithId[]) => void,
-  onError?: (message: string) => void
-) {
-  const q = query(
-    collection(db, 'events'),
-    where('status', '==', 'published')
-  );
-
-  return onSnapshot(
-    q,
-    (snap) => {
-      const events = snap.docs
-        .map((d) => ({
-          id: d.id,
-          ...(d.data() as EventDoc),
-        }))
-        .sort((a, b) => a.eventDate.localeCompare(b.eventDate));
-
-      callback(events);
-    },
-    (error) => {
-      onError?.(error.message);
-    }
-  );
+export function subscribePublishedEvents(callback: (events: EventWithId[]) => void, onError?: (message: string) => void) {
+  let active = true;
+  const load = () => void loadEvents(false).then((rows) => { if (active) callback(rows); }).catch((error: Error) => onError?.(error.message));
+  load();
+  const channel = supabase.channel(`public-events-${crypto.randomUUID()}`).on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, load).subscribe();
+  return () => { active = false; void supabase.removeChannel(channel); };
 }
 
-export function subscribeAllEvents(
-  callback: (events: EventWithId[]) => void,
-  onError?: (message: string) => void
-) {
-  const q = query(
-    collection(db, 'events'),
-    orderBy('eventDate', 'desc')
-  );
-
-  return onSnapshot(
-    q,
-    (snap) => {
-      callback(
-        snap.docs.map((d) => ({
-          id: d.id,
-          ...(d.data() as EventDoc),
-        }))
-      );
-    },
-    (error) => {
-      onError?.(error.message);
-    }
-  );
+export function subscribeAllEvents(callback: (events: EventWithId[]) => void, onError?: (message: string) => void) {
+  let active = true;
+  const load = () => void loadEvents(true).then((rows) => { if (active) callback(rows); }).catch((error: Error) => onError?.(error.message));
+  load();
+  const channel = supabase.channel(`admin-events-${crypto.randomUUID()}`).on('postgres_changes', { event: '*', schema: 'public', table: 'events' }, load).subscribe();
+  return () => { active = false; void supabase.removeChannel(channel); };
 }
 
 export async function getEvent(eventId: string) {
-  const snap = await getDoc(doc(db, 'events', eventId));
-
-  if (!snap.exists()) {
-    return null;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId);
+  let query = supabase.from('events').select('*').limit(1);
+  query = uuid ? query.eq('id', eventId) : query.eq('slug', eventId);
+  let { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  if (!data && !uuid) {
+    const legacy = await supabase.from('events').select('*').eq('legacy_id', eventId).maybeSingle();
+    if (legacy.error) throw legacy.error;
+    data = legacy.data;
   }
-
-  return {
-    id: snap.id,
-    ...(snap.data() as EventDoc),
-  } as EventWithId;
+  return data ? eventFromRow(data) : null;
 }
 
-export async function createEvent(
-  eventId: string,
-  payload: Omit<
-    EventDoc,
-    'reserved' | 'checkedIn' | 'createdAt' | 'updatedAt'
-  >
-) {
-  await setDoc(doc(db, 'events', eventId), {
-    ...payload,
-    reserved: 0,
-    checkedIn: 0,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
+export async function createEvent(eventId: string, payload: Omit<EventDoc, 'reserved' | 'checkedIn' | 'createdAt' | 'updatedAt'>) {
+  const id = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(eventId) ? eventId : crypto.randomUUID();
+  const { data, error } = await supabase.from('events').insert({ id, ...eventPayload(payload) }).select('*').single();
+  if (error) throw error;
+  return eventFromRow(data);
+}
+
+export async function updateEvent(eventId: string, payload: Partial<EventDoc>) {
+  const id = await resolveEventId(eventId);
+  const patch = eventPayload(payload);
+  const { error } = await supabase.from('events').update(patch).eq('id', id);
+  if (error) throw error;
+}
+
+export async function createBooking(eventId: string, input: { fullName: string; phone: string; email: string; quantity: number }) {
+  await ensureGuestAuth();
+  const id = await resolveEventId(eventId);
+  const { data, error } = await supabase.rpc('create_booking', {
+    p_event_id: id,
+    p_full_name: input.fullName.trim(),
+    p_email: input.email.trim().toLowerCase(),
+    p_phone: input.phone.trim(),
+    p_quantity: input.quantity,
   });
+  if (error) throw new Error(error.message.replace(/^.*DETAIL: /, ''));
+  const result = Array.isArray(data) ? data[0] : data;
+  if (!result?.ticket_id || !result?.booking_code) throw new Error('Booking could not be completed.');
+  return { ticketId: result.ticket_id as string, bookingCode: result.booking_code as string };
 }
 
-export async function updateEvent(
-  eventId: string,
-  payload: Partial<EventDoc>
-) {
-  const safePayload: Partial<EventDoc> = {
-    ...payload,
-  };
-
-  delete safePayload.reserved;
-  delete safePayload.checkedIn;
-  delete safePayload.createdAt;
-
-  await updateDoc(doc(db, 'events', eventId), {
-    ...safePayload,
-    updatedAt: serverTimestamp(),
-  });
+export async function getPublicTicket(eventId: string, ticketId: string) {
+  const id = await resolveEventId(eventId);
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ticketId);
+  let query = supabase.from('public_tickets').select('*').eq('event_id', id).limit(1);
+  query = isUuid ? query.eq('id', ticketId) : query.eq('legacy_id', ticketId);
+  const { data, error } = await query.maybeSingle();
+  if (error) throw error;
+  return data ? publicTicketFromRow(data) : null;
 }
 
-/* ============================================================
-   CREATE BOOKING
-============================================================ */
-
-export async function createBooking(
-  eventId: string,
-  input: {
-    fullName: string;
-    phone: string;
-    email: string;
-    quantity: number;
-  }
-) {
-  const guest = await ensureGuestAuth();
-
-  const eventRef = doc(
-    db,
-    'events',
-    eventId
-  );
-
-  const bookingRef = doc(
-    db,
-    'events',
-    eventId,
-    'bookings',
-    guest.uid
-  );
-
-  const ticketRef = doc(
-    db,
-    'events',
-    eventId,
-    'tickets',
-    guest.uid
-  );
-
-  const eventPrefix = eventId
-    .replace(/[^a-zA-Z0-9]/g, '')
-    .slice(0, 3)
-    .toUpperCase()
-    .padEnd(3, 'X');
-
-  const bookingCode =
-    `${eventPrefix}-${guest.uid.slice(0, 8).toUpperCase()}`;
-
-  await runTransaction(db, async (tx) => {
-    const eventSnap = await tx.get(eventRef);
-    const existingBooking = await tx.get(bookingRef);
-
-    if (!eventSnap.exists()) {
-      throw new Error('This event no longer exists.');
-    }
-
-    if (existingBooking.exists()) {
-      throw new Error(
-        'A ticket has already been booked on this device for this event.'
-      );
-    }
-
-    const event = eventSnap.data() as EventDoc;
-
-    if (event.status !== 'published') {
-      throw new Error(
-        'This event is not currently available for booking.'
-      );
-    }
-
-    if (!event.bookingOpen) {
-      throw new Error(
-        'Bookings are currently closed for this event.'
-      );
-    }
-
-    if (
-      !Number.isInteger(input.quantity) ||
-      input.quantity < 1 ||
-      input.quantity > event.maxTicketsPerBooking
-    ) {
-      throw new Error(
-        `You can reserve between 1 and ${event.maxTicketsPerBooking} spaces.`
-      );
-    }
-
-    const available =
-      event.capacity - event.reserved;
-
-    if (available <= 0) {
-      throw new Error(
-        'This event is fully booked.'
-      );
-    }
-
-    if (input.quantity > available) {
-      throw new Error(
-        `Only ${available} slot${available === 1 ? '' : 's'} remain.`
-      );
-    }
-
-    tx.update(eventRef, {
-      reserved:
-        event.reserved + input.quantity,
-
-      updatedAt:
-        serverTimestamp(),
-    });
-
-    tx.set(bookingRef, {
-      eventId,
-      bookingCode,
-
-      fullName:
-        input.fullName.trim(),
-
-      phone:
-        input.phone.trim(),
-
-      email:
-        input.email.trim().toLowerCase(),
-
-      quantity:
-        input.quantity,
-
-      status:
-        'confirmed',
-
-      checkedIn:
-        false,
-
-      checkedInAt:
-        null,
-
-      checkedInBy:
-        null,
-
-      ownerUid:
-        guest.uid,
-
-      createdAt:
-        serverTimestamp(),
-
-      updatedAt:
-        serverTimestamp(),
-    });
-
-    tx.set(ticketRef, {
-      eventId,
-
-      ticketCode:
-        bookingCode,
-
-      guestName:
-        input.fullName.trim(),
-
-      quantity:
-        input.quantity,
-
-      status:
-        'confirmed',
-
-      checkedIn:
-        false,
-
-      checkedInAt:
-        null,
-
-      createdAt:
-        serverTimestamp(),
-    });
-  });
-
-  return {
-    ticketId: guest.uid,
-    bookingCode,
-  };
+export async function listEventBookings(eventId: string) {
+  const id = await resolveEventId(eventId);
+  const { data, error } = await supabase.from('bookings').select('*').eq('event_id', id).order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data ?? []).map(bookingFromRow);
 }
 
-/* ============================================================
-   PUBLIC TICKET
-============================================================ */
-
-export async function getPublicTicket(
-  eventId: string,
-  ticketId: string
-) {
-  const snap = await getDoc(
-    doc(
-      db,
-      'events',
-      eventId,
-      'tickets',
-      ticketId
-    )
-  );
-
-  if (!snap.exists()) {
-    return null;
-  }
-
-  return {
-    id: snap.id,
-    ...(snap.data() as any),
-  } as PublicTicketWithId;
+export async function getBookingForAdmin(eventId: string, ticketId: string) {
+  const id = await resolveEventId(eventId);
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(ticketId);
+  let ticketQuery = supabase.from('tickets').select('id,booking_id').eq('event_id', id).limit(1);
+  ticketQuery = isUuid ? ticketQuery.eq('id', ticketId) : ticketQuery.eq('legacy_id', ticketId);
+  const { data: ticket, error: ticketError } = await ticketQuery.maybeSingle();
+  if (ticketError) throw ticketError;
+  if (!ticket) return null;
+  const { data, error } = await supabase.from('bookings').select('*').eq('id', ticket.booking_id).maybeSingle();
+  if (error) throw error;
+  return data ? { ...bookingFromRow(data), id: ticket.id } : null;
 }
 
-/* ============================================================
-   ADMIN BOOKING LIST
-============================================================ */
-
-export async function listEventBookings(
-  eventId: string
-) {
-  const q = query(
-    collection(
-      db,
-      'events',
-      eventId,
-      'bookings'
-    ),
-    orderBy('createdAt', 'desc')
-  );
-
-  const snap = await getDocs(q);
-
-  return snap.docs.map(
-    (d) =>
-      ({
-        id: d.id,
-        ...(d.data() as any),
-      } as BookingWithId)
-  );
-}
-
-/* ============================================================
-   GET BOOKING BY DOCUMENT ID
-============================================================ */
-
-export async function getBookingForAdmin(
-  eventId: string,
-  ticketId: string
-) {
-  const snap = await getDoc(
-    doc(
-      db,
-      'events',
-      eventId,
-      'bookings',
-      ticketId
-    )
-  );
-
-  if (!snap.exists()) {
-    return null;
-  }
-
-  return {
-    id: snap.id,
-    ...(snap.data() as any),
-  } as BookingWithId;
-}
-
-/* ============================================================
-   FIND BOOKING BY ID OR VISIBLE TICKET NUMBER
-============================================================ */
-
-export async function findBookingForAdmin(
-  eventId: string,
-  ticketValue: string
-) {
-  const value =
-    ticketValue.trim();
-
-  if (!value) {
-    return null;
-  }
-
-  // First try as Firestore booking document ID.
-  const directSnap = await getDoc(
-    doc(
-      db,
-      'events',
-      eventId,
-      'bookings',
-      value
-    )
-  );
-
-  if (directSnap.exists()) {
-    return {
-      id: directSnap.id,
-      ...(directSnap.data() as any),
-    } as BookingWithId;
-  }
-
-  // Otherwise search using visible ticket number.
-  const code =
-    value.toUpperCase();
-
-  const q = query(
-    collection(
-      db,
-      'events',
-      eventId,
-      'bookings'
-    ),
-    where(
-      'bookingCode',
-      '==',
-      code
-    ),
-    limit(1)
-  );
-
-  const snap =
-    await getDocs(q);
-
-  if (snap.empty) {
-    return null;
-  }
-
-  const bookingDoc =
-    snap.docs[0];
-
-  return {
-    id: bookingDoc.id,
-    ...(bookingDoc.data() as any),
-  } as BookingWithId;
-}
-
-/* ============================================================
-   CHECK IN
-============================================================ */
-
-export async function checkInTicket(
-  eventId: string,
-  ticketId: string
-) {
-  if (
-    !auth.currentUser ||
-    auth.currentUser.isAnonymous
-  ) {
-    throw new Error(
-      'Admin authentication required.'
-    );
-  }
-
-  const eventRef = doc(
-    db,
-    'events',
-    eventId
-  );
-
-  const bookingRef = doc(
-    db,
-    'events',
-    eventId,
-    'bookings',
-    ticketId
-  );
-
-  const ticketRef = doc(
-    db,
-    'events',
-    eventId,
-    'tickets',
-    ticketId
-  );
-
-  await runTransaction(db, async (tx) => {
-    const eventSnap =
-      await tx.get(eventRef);
-
-    const bookingSnap =
-      await tx.get(bookingRef);
-
-    const ticketSnap =
-      await tx.get(ticketRef);
-
-    if (
-      !eventSnap.exists() ||
-      !bookingSnap.exists() ||
-      !ticketSnap.exists()
-    ) {
-      throw new Error(
-        'Ticket could not be verified.'
-      );
+export async function findBookingForAdmin(eventId: string, ticketValue: string) {
+  const id = await resolveEventId(eventId);
+  const value = ticketValue.trim();
+  if (!value) return null;
+  let ticketQuery = supabase.from('tickets').select('id,booking_id').eq('event_id', id).limit(1);
+  const isUuid = /^[0-9a-f-]{36}$/i.test(value);
+  if (isUuid) ticketQuery = ticketQuery.eq('id', value);
+  else {
+    const { data: legacyTicket } = await supabase.from('tickets').select('id,booking_id').eq('event_id', id).eq('legacy_id', value).maybeSingle();
+    if (legacyTicket) {
+      const { data: legacyBooking, error: legacyBookingError } = await supabase.from('bookings').select('*').eq('id', legacyTicket.booking_id).maybeSingle();
+      if (legacyBookingError) throw legacyBookingError;
+      return legacyBooking ? { ...bookingFromRow(legacyBooking), id: legacyTicket.id } : null;
     }
+    ticketQuery = supabase.from('tickets').select('id,booking_id').eq('event_id', id).eq('ticket_code', value.toUpperCase()).limit(1);
+  }
+  const { data: ticket, error: ticketError } = await ticketQuery.maybeSingle();
+  if (ticketError) throw ticketError;
+  if (!ticket) return null;
+  const { data, error } = await supabase.from('bookings').select('*').eq('id', ticket.booking_id).maybeSingle();
+  if (error) throw error;
+  return data ? { ...bookingFromRow(data), id: ticket.id } : null;
+}
 
-    const event =
-      eventSnap.data() as EventDoc;
-
-    const booking =
-      bookingSnap.data() as any;
-
-    if (booking.status !== 'confirmed') {
-      throw new Error(
-        'This ticket is not active.'
-      );
-    }
-
-    if (booking.checkedIn) {
-      throw new Error(
-        'This ticket has already been checked in.'
-      );
-    }
-
-    tx.update(bookingRef, {
-      checkedIn: true,
-      checkedInAt: serverTimestamp(),
-      checkedInBy: auth.currentUser!.uid,
-      updatedAt: serverTimestamp(),
-    });
-
-    tx.update(ticketRef, {
-      checkedIn: true,
-      checkedInAt: serverTimestamp(),
-    });
-
-    tx.update(eventRef, {
-      checkedIn: Math.min(
-        event.reserved,
-        (event.checkedIn || 0) +
-          booking.quantity
-      ),
-
-      updatedAt:
-        serverTimestamp(),
-    });
-  });
+export async function checkInTicket(eventId: string, ticketId: string) {
+  const id = await resolveEventId(eventId);
+  const { data, error } = await supabase.rpc('check_in_ticket', { p_event_id: id, p_ticket_id: ticketId });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return row ? bookingFromRow(row as Record<string, any>) : null;
 }

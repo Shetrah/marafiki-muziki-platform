@@ -1,7 +1,5 @@
 import { useEffect, useState } from 'react';
-import { httpsCallable } from 'firebase/functions';
-import { doc, onSnapshot, serverTimestamp, setDoc } from 'firebase/firestore';
-import { functions, db } from '../lib/firebase';
+import { supabase } from '../lib/supabase';
 import { subscribeAllEvents } from '../lib/data';
 import type { EventWithId } from '../lib/types';
 
@@ -26,24 +24,28 @@ export default function AdminArtwork() {
     setEventId((current) => current || items[0]?.id || '');
   }, setError), []);
 
-  useEffect(() => onSnapshot(doc(db, 'settings', 'ticketArtworkBudget'), (snapshot) => {
-    if (!snapshot.exists()) return;
-    const data = snapshot.data();
-    setEnabled(Boolean(data.enabled));
-    setMonthlyBudget(Number(data.maxImagesPerMonth ?? 20));
-    setMaxVariations(Number(data.maxImagesPerRequest ?? 3));
-    setUsedCalls(Number(data.usedImages ?? 0));
-  }, (reason) => setError(reason.message)), []);
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      const { data, error: readError } = await supabase.from('artwork_budgets').select('*').eq('id', true).maybeSingle();
+      if (!active) return;
+      if (readError) { setError(readError.message); return; }
+      if (data) { setEnabled(data.enabled); setMonthlyBudget(data.max_calls_per_month); setMaxVariations(data.max_variations_per_request); setUsedCalls(data.used_calls); }
+    };
+    void load();
+    const channel = supabase.channel('artwork-budget').on('postgres_changes', { event: '*', schema: 'public', table: 'artwork_budgets' }, () => { void load(); }).subscribe();
+    return () => { active = false; void supabase.removeChannel(channel); };
+  }, []);
 
   async function saveBudget() {
     setError(''); setSuccess('');
     try {
-      await setDoc(doc(db, 'settings', 'ticketArtworkBudget'), {
+      const { error: updateError } = await supabase.from('artwork_budgets').update({
         enabled,
-        maxImagesPerMonth: Math.max(0, Math.min(500, monthlyBudget)),
-        maxImagesPerRequest: Math.max(1, Math.min(3, maxVariations)),
-        updatedAt: serverTimestamp(),
-      }, { merge: true });
+        max_calls_per_month: Math.max(0, Math.min(500, monthlyBudget)),
+        max_variations_per_request: Math.max(1, Math.min(3, maxVariations)),
+      }).eq('id', true);
+      if (updateError) throw updateError;
       setSuccess('Generation budget saved.');
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save the budget.'); }
   }
@@ -51,10 +53,9 @@ export default function AdminArtwork() {
   async function generate() {
     setBusy(true); setError(''); setSuccess(''); setResults([]);
     try {
-      const call = httpsCallable(functions, 'generateTicketArtwork', { timeout: 300_000 });
-      const response = await call({ eventId, model: tier, variations });
-      const payload = response.data as { results: ArtworkResult[] };
-      setResults(payload.results);
+      const { data, error: invokeError } = await supabase.functions.invoke('generate-ticket-artwork', { body: { eventId, model: tier, variations } });
+      if (invokeError) throw invokeError;
+      setResults((data as { results: ArtworkResult[] }).results);
       setSuccess('Artwork variations generated. Preview or download the files below.');
     } catch (reason: any) { setError(reason?.message || 'Artwork generation failed.'); }
     finally { setBusy(false); }
@@ -63,7 +64,7 @@ export default function AdminArtwork() {
   const selectedEvent = events.find((item) => item.id === eventId);
 
   return <>
-    <div className="admin-page-head"><div><span className="section-tag">GEMINI IMAGE GENERATION</span><h1>AI Ticket Artwork</h1><p>Generate poster inspired artwork for an event. The uploaded Firebase Storage poster is the design reference.</p></div></div>
+    <div className="admin-page-head"><div><span className="section-tag">GEMINI IMAGE GENERATION</span><h1>AI Ticket Artwork</h1><p>Generate poster inspired artwork for an event. The uploaded Supabase Storage poster is the design reference.</p></div></div>
     {error && <div className="error-box">{error}</div>}
     {success && <div className="success-box">{success}</div>}
     <section className="admin-panel" style={{ maxWidth: 850 }}>

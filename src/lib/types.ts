@@ -1,5 +1,3 @@
-import type { Timestamp } from 'firebase/firestore';
-
 export type EventStatus = 'draft' | 'published' | 'completed' | 'cancelled';
 
 export type EventDoc = {
@@ -20,8 +18,8 @@ export type EventDoc = {
   maxTicketsPerBooking: number;
   bookingOpen: boolean;
   status: EventStatus;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type BookingDoc = {
@@ -31,13 +29,13 @@ export type BookingDoc = {
   phone: string;
   email: string;
   quantity: number;
-  status: 'confirmed' | 'cancelled';
+  status: 'confirmed' | 'cancelled' | 'refunded';
   checkedIn: boolean;
-  checkedInAt?: Timestamp | null;
+  checkedInAt?: string | null;
   checkedInBy?: string | null;
   ownerUid: string;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type PublicTicketDoc = {
@@ -45,10 +43,10 @@ export type PublicTicketDoc = {
   ticketCode: string;
   guestName: string;
   quantity: number;
-  status: 'confirmed' | 'cancelled';
+  status: 'confirmed' | 'cancelled' | 'refunded';
   checkedIn: boolean;
-  checkedInAt?: Timestamp | null;
-  createdAt?: Timestamp;
+  checkedInAt?: string | null;
+  createdAt?: string;
 };
 
 export type EventWithId = EventDoc & { id: string };
